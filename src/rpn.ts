@@ -1,9 +1,11 @@
+import { useTranslation } from "./i18n/i18n";
 import {
   Addition,
   Division,
   Multiplication,
   Operation,
   Operator,
+  OPERATORS,
   Subtraction,
 } from "./operations";
 
@@ -20,7 +22,9 @@ class OperatorFactory {
   static getOperation(operator: Operator): Operation {
     const operation = this.operators[operator];
     if (!operation) {
-      throw new Error(`Unsupported operator: ${operator}`);
+      throw new Error(
+        `${useTranslation().errors.unsupportedOperator}: ${operator}`
+      );
     }
     return operation;
   }
@@ -40,18 +44,18 @@ class RPNCalculator {
         const a = this.stack.pop();
 
         if (a === undefined || b === undefined) {
-          throw new Error("insufficient operands");
+          throw new Error(useTranslation().errors.insufficientOperands);
         }
 
         const operation = OperatorFactory.getOperation(token as Operator);
         this.stack.push(operation.execute(a, b));
       } else {
-        throw new Error(`invalid token: ${token}`);
+        throw new Error(`${useTranslation().errors.invalidToken}: ${token}`);
       }
     });
 
     if (this.stack.length !== 1) {
-      throw new Error("too many operands");
+      throw new Error(useTranslation().errors.tooManyOperands);
     }
 
     return this.stack.pop()!;
@@ -62,7 +66,7 @@ class RPNCalculator {
   }
 
   private isOperator(value: string): boolean {
-    return ["+", "-", "*", "/"].includes(value);
+    return OPERATORS.includes(value as Operator);
   }
 }
 
@@ -85,7 +89,7 @@ class InfixToPostfixConverter {
   convert(expression: string): string {
     const tokens = expression.match(/\d+|\+|\-|\*|\/|\(|\)/g);
     if (!tokens) {
-      throw new Error("invalid postfix");
+      throw new Error(useTranslation().errors.invalidPostfix);
     }
 
     const output: string[] = [];
@@ -112,7 +116,7 @@ class InfixToPostfixConverter {
         if (operators[operators.length - 1] === "(") {
           operators.pop();
         } else {
-          throw new Error("mismatched parentheses");
+          throw new Error(useTranslation().errors.mismatchedParentheses);
         }
       }
     });
@@ -134,17 +138,17 @@ try {
     output: process.stdout,
   });
 
-  rl.question(`Entre ton calcul connard: `, (input) => {
+  rl.question(useTranslation().question.compute, (input) => {
     try {
       const postfixExpression = converter.convert(input);
-      console.log("postfix", postfixExpression);
       const result = calculator.evaluate(postfixExpression);
-      console.log("res", result);
+
+      console.log("result:", result);
     } catch (error) {
       if (error instanceof Error) {
         console.error("Error:", error.message);
       } else {
-        console.error("bordel de merde");
+        console.error(useTranslation().errors.unknownError);
       }
     }
     rl.close();
