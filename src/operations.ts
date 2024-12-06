@@ -1,9 +1,9 @@
 import { assert } from "node:console";
 
-const operators = ["+", "-", "*", "/"] as const;
+export const OPERATORS = ["+", "-", "*", "/"] as const;
 const ONE = 1 as const;
 const ZERO = 0 as const;
-export type Operator = (typeof operators)[number];
+export type Operator = (typeof OPERATORS)[number];
 
 const memo = new Map<string, number>();
 
