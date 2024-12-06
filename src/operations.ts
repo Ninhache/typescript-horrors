@@ -5,6 +5,12 @@ const ONE = 1 as const;
 const ZERO = 0 as const;
 export type Operator = (typeof operators)[number];
 
+const memo = new Map<string, number>();
+
+function makeKey(op: string, a: number, b: number) {
+  return `${op}:${a},${b}`;
+}
+
 export interface Operation {
   execute(a: number, b: number): number;
 }
@@ -38,60 +44,97 @@ class OperationUtils {
 }
 
 export class Addition implements Operation {
-  execute(a: unknown, b: unknown): number {
+  execute(a: unknown, b: unknown, acc: number = 0): number {
     OperationUtils.isNumber(a);
     OperationUtils.isNumber(b);
+
+    const key = makeKey("add", a, b);
+    if (memo.has(key)) {
+      return memo.get(key)!;
+    }
+
+    let result: number;
     if (OperationUtils.isZero(b)) {
-      return a;
+      result = acc + a;
     } else {
-      return this.execute(
+      result = this.execute(
         OperationUtils.addOne(a) as number,
-        OperationUtils.subOne(b) as number
+        OperationUtils.subOne(b) as number,
+        acc
       );
     }
+
+    memo.set(key, result);
+    return result;
   }
 }
 
 export class Subtraction implements Operation {
-  execute(a: unknown, b: unknown): number {
+  execute(a: unknown, b: unknown, acc: number = 0): number {
     OperationUtils.isNumber(a);
     OperationUtils.isNumber(b);
+
+    const key = makeKey("sub", a, b);
+    if (memo.has(key)) {
+      return memo.get(key)!;
+    }
+
+    let result: number;
     if (OperationUtils.isZero(b)) {
-      return a;
+      result = acc + a;
     } else {
-      return this.execute(
+      result = this.execute(
         OperationUtils.subOne(a) as number,
-        OperationUtils.subOne(b) as number
+        OperationUtils.subOne(b) as number,
+        acc
       );
     }
+
+    memo.set(key, result);
+    return result;
   }
 }
 
 export class Multiplication implements Operation {
-  execute(a: unknown, b: unknown): number {
+  execute(a: unknown, b: unknown, acc: number = 0): number {
     OperationUtils.isNumber(a);
     OperationUtils.isNumber(b);
 
-    if (OperationUtils.isZero(b)) return 0;
-
-    if (b < 0) {
-      return -this.execute(a, -b);
+    const key = makeKey("mul", a, b);
+    if (memo.has(key)) {
+      return memo.get(key)!;
     }
 
-    return new Addition().execute(
-      a,
-      this.execute(a, OperationUtils.subOne(b) as number)
-    );
+    let result: number;
+    if (OperationUtils.isZero(b)) {
+      result = acc;
+    } else if ((b as number) < 0) {
+      result = -this.execute(a, -(b as number), acc);
+    } else {
+      result = this.execute(
+        a,
+        OperationUtils.subOne(b) as number,
+        new Addition().execute(acc, a)
+      );
+    }
+
+    memo.set(key, result);
+    return result;
   }
 }
 
 export class Division implements Operation {
-  execute(a: number, b: number): number {
+  execute(a: number, b: number, acc: number = 0): number {
     OperationUtils.isNumber(a);
     OperationUtils.isNumber(b);
 
+    const key = makeKey("div", a, b);
+    if (memo.has(key)) {
+      return memo.get(key)!;
+    }
+
     if (OperationUtils.isZero(b)) {
-      throw new Error("division by zero isnt possible");
+      throw new Error("division by zero isn't possible");
     }
 
     let negativeResult = false;
@@ -108,14 +151,19 @@ export class Division implements Operation {
       negativeResult = !negativeResult;
     }
 
-    const recurse = (x: unknown, y: unknown): number => {
-      if ((x as number) < (y as number)) return (x as number) / (y as number);
-      return OperationUtils.addOne(
-        recurse(new Subtraction().execute(x, y), y)
-      ) as number;
-    };
+    let result: number;
+    if (dividend < divisor) {
+      result = acc;
+    } else {
+      result = this.execute(
+        new Subtraction().execute(dividend, divisor),
+        divisor,
+        OperationUtils.addOne(acc) as number
+      );
+    }
 
-    const result = recurse(dividend, divisor);
-    return negativeResult ? -result : result;
+    const final = negativeResult ? -result : result;
+    memo.set(key, final);
+    return final;
   }
 }
