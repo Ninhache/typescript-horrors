@@ -1,34 +1,58 @@
-## Ultra RPN Calculator using ultimate recursion for ultime performances
+## ultra rpn calculator using ultimate recursion for ultime performances
 
-All is in the title, I can't explain more..
-Main features are :
+all is in the title, i can't explain more..
+main features are :
 
-- Reverse Polish Notation
-- Infix Notation to the current Reverse Polish Notation we're using
-- Inclusive i18n
-- Usefull & custom utility types
-- Crashes
-- Approved by pairs
+- reverse polish notation
+- infix notation to the current reverse polish notation we're using
+- inclusive i18n
+- usefull & custom utility types
+- crashes
+- self healing crashes (it crashes UP now)
+- fast af AND falsy
+- approved by pairs
 
-## How to run it
+## how to run it
 
-Real simple, don't overthink :
+real simple, dont overthink :
 
 ```bash
 yarn install
 yarn dev
 ```
 
-Then type a calculus, the program asks you nicely..
+then type a calculus, the program ask you nicely..
 
-### When it crashes (it will)
+### when it crashes (it will), it crashes UP
 
-`Maximum call stack size exceeded` ? That's the recursion being recursion.
-Node's stack is 984 kB by default, so just give it more room :
+it used to just die. now its smarter about being dumb : the program is a
+supervisor that run the calcul in a child process and climb a ladder each time
+the stack blow up :
 
-```bash
-node --stack-size=8000 dist/rpn.js
-```
+1. pure recursion, default stack
+2. pure recursion, stack at 80% of the os limit
+3. bitwise, default stack
+4. bitwise, stack at 80% of the os limit
+5. gives up politely ("the cpu got nice and warm")
 
-Bigger numbers = bigger `--stack-size`. At some point it segfaults instead of
-crashing politely, that's the spirit of the project..
+each rung is its own process, so even a segfault dont kill the supervisor : it
+just notice the child died and climb higher. we stay UNDER the os stack limit
+(80%) on purpose, thats how we dodge node's lovely uncatchable segfault.
+
+### why is it fast now ??
+
+cause once the recursion give up, the bitwise method is O(log n) (like ~32
+little operations) instead of recursing one by one a million time. so it finish
+instantly.
+
+the catch : bitwise works in 32 bits, so anything bigger than 2^31 wrap around
+and give you a confidently wrong answer. fast af AND falsy. its a feature not a
+bug.
+
+### ⚠️ run in winter only
+
+this thing brute force arithmetic by respawning node and reheating the whole
+stack on every rung. translation : it make your cpu sweat. running it in summer
+is a fire hazard and a war crime. recommanded ambiant temperature : below 5°C,
+window open, mug of something hot nearby. basically a space heater that also do
+maths, sometimes correctly.
