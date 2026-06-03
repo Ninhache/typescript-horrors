@@ -10,6 +10,11 @@ const fr = {
     compute:
       "Pose moi un calcul connard!! (pas trop grand où je quitte le programme..): ",
   },
+  info: {
+    fallback:
+      "bon ça a pété la pile.. ok ok je le fais à la méthode chiante qui marche..",
+    giveUp: "on sait pas faire, mais le CPU a bien chauffé",
+  },
   errors: {
     divisionByZero: "La division par 0 n'existe pas",
     mismatchedParentheses: "Problèmes de parenthèses",

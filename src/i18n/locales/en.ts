@@ -10,6 +10,11 @@ const en = {
     compute:
       "ask for a calculus coward.. don't be too hard with me or I'll leave..",
   },
+  info: {
+    fallback:
+      "ok it blew up the stack.. fine, I'll do it the boring way that actually works..",
+    giveUp: "no clue how to do that, but hey, the CPU got nice and warm",
+  },
   errors: {
     divisionByZero: "division by zero doesnt exist",
     mismatchedParentheses: "Mismatched Parentheses",

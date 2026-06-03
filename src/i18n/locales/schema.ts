@@ -9,6 +9,10 @@ export default {
   question: {
     compute: _,
   },
+  info: {
+    fallback: _,
+    giveUp: _,
+  },
   errors: {
     divisionByZero: _,
     mismatchedParentheses: _,
