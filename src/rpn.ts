@@ -1,150 +1,163 @@
-import { useTranslation } from "./i18n/i18n";
-import {
-  Addition,
-  Division,
-  Multiplication,
-  Operation,
-  Operator,
-  OPERATORS,
-  Subtraction,
-} from "./operations";
-
 import readline from "node:readline";
+import { spawnSync, SpawnSyncReturns } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
-class OperatorFactory {
-  private static operators: Record<Operator, Operation> = {
-    "+": new Addition(),
-    "-": new Subtraction(),
-    "*": new Multiplication(),
-    "/": new Division(),
-  };
+import { InfixToPostfixConverter } from "./calculator";
+import { useTranslation } from "./i18n/i18n";
+import { Method } from "./operations";
 
-  static getOperation(operator: Operator): Operation {
-    const operation = this.operators[operator];
-    if (!operation) {
-      throw new Error(
-        `${useTranslation().errors.unsupportedOperator}: ${operator}`
-      );
-    }
-    return operation;
-  }
-}
+/**
+ * Fraction de la pile OS qu'on s'autorise à demander à V8. On reste SOUS la
+ * limite OS : au-dessus, V8 ne déclenche pas son garde-fou avant la vraie pile
+ * et Node segfault (non catchable). À 80% on garde une marge => RangeError
+ * propre, rattrapable, et surtout pas de segfault de merde.
+ */
+const STACK_BUDGET_RATIO: 0.8 = 0.8 as const;
+const DEFAULT_STACK_KB: 8192 = 8192 as const; // si on n'arrive pas à lire la pile OS
+const BYTES_PER_KB: 1024 = 1024 as const;
 
-class RPNCalculator {
-  private stack: number[] = [];
+/** Code de sortie convenu avec le worker : "j'ai dépassé la pile, réessaie". */
+const EXIT_STACK_OVERFLOW: 42 = 42 as const;
+const EXIT_OK: 0 = 0 as const;
 
-  evaluate(expression: string): number {
-    const tokens = expression.split(" ");
-
-    tokens.forEach((token) => {
-      if (this.isNumber(token)) {
-        this.stack.push(parseFloat(token));
-      } else if (this.isOperator(token)) {
-        const b = this.stack.pop();
-        const a = this.stack.pop();
-
-        if (a === undefined || b === undefined) {
-          throw new Error(useTranslation().errors.insufficientOperands);
-        }
-
-        const operation = OperatorFactory.getOperation(token as Operator);
-        this.stack.push(operation.execute(a, b));
-      } else {
-        throw new Error(`${useTranslation().errors.invalidToken}: ${token}`);
+/** Lit la taille de pile OS (soft limit) en KB. Linux d'abord, puis ulimit. */
+function osStackKB(): number {
+  try {
+    const limits: string = readFileSync("/proc/self/limits", "utf8");
+    const line: string | undefined = limits
+      .split("\n")
+      .find((l: string): boolean => l.toLowerCase().startsWith("max stack size"));
+    if (line) {
+      const soft: string = line
+        .replace(/max stack size/i, "")
+        .trim()
+        .split(/\s+/)[0];
+      if (soft && soft !== "unlimited") {
+        const bytes: number = parseInt(soft, 10);
+        return Math.floor(bytes / BYTES_PER_KB);
       }
-    });
-
-    if (this.stack.length !== 1) {
-      throw new Error(useTranslation().errors.tooManyOperands);
     }
-
-    return this.stack.pop()!;
+  } catch {
+    /* pas de /proc, on tente ulimit */
   }
 
-  private isNumber(value: string): boolean {
-    return !isNaN(parseFloat(value)) && isFinite(parseFloat(value));
+  try {
+    const probe: SpawnSyncReturns<string> = spawnSync("sh", ["-c", "ulimit -s"], {
+      encoding: "utf8",
+    });
+    const out: string = (probe.stdout ?? "").trim();
+    const kb: number = parseInt(out, 10);
+    if (!isNaN(kb)) {
+      return kb;
+    }
+  } catch {
+    /* tant pis */
   }
 
-  private isOperator(value: string): boolean {
-    return OPERATORS.includes(value as Operator);
-  }
+  return DEFAULT_STACK_KB;
 }
 
-class InfixToPostfixConverter {
-  private precedence: Record<string, number> = {
-    "+": 1,
-    "-": 1,
-    "*": 2,
-    "/": 2,
-  };
+type Rung = {
+  readonly method: Method;
+  readonly bigStack: boolean;
+  readonly label: string;
+};
 
-  private isOperator(value: string): boolean {
-    return ["+", "-", "*", "/"].includes(value);
-  }
+/**
+ * L'échelle. On commence par l'horreur récursive sur la pile par défaut, et on
+ * monte en puissance à chaque échec : plus de pile, puis le bitwise, puis le
+ * bitwise avec plus de pile. Si même ça pète : on admet qu'on sait pas faire.
+ */
+const RUNGS: readonly Rung[] = [
+  { method: "recurse", bigStack: false, label: "récursion pure, pile par défaut" },
+  { method: "recurse", bigStack: true, label: "récursion pure, pile à 80% de l'OS" },
+  { method: "bitwise", bigStack: false, label: "bitwise, pile par défaut" },
+  { method: "bitwise", bigStack: true, label: "bitwise, pile à 80% de l'OS" },
+] as const;
 
-  private hasHigherPrecedence(op1: string, op2: string): boolean {
-    return this.precedence[op1] >= this.precedence[op2];
-  }
+type Attempt =
+  | { readonly kind: "ok"; readonly value: number }
+  | { readonly kind: "overflow" } // pile dépassée (RangeError ou segfault) => on monte d'un cran
+  | { readonly kind: "fatal"; readonly message: string }; // vraie erreur de calcul => inutile d'insister
 
-  convert(expression: string): string {
-    const tokens = expression.match(/\d+|\+|\-|\*|\/|\(|\)/g);
-    if (!tokens) {
-      throw new Error(useTranslation().errors.invalidPostfix);
+/** Lance un barreau dans un process enfant et interprète sa mort. */
+function runRung(postfix: string, rung: Rung, stackKB: number): Attempt {
+  const flags: readonly string[] = rung.bigStack
+    ? ([`--stack-size=${stackKB}`] as const)
+    : ([] as const);
+  const worker: string = join(__dirname, "worker.js");
+
+  const res: SpawnSyncReturns<string> = spawnSync(
+    process.execPath,
+    [...flags, worker],
+    {
+      env: { ...process.env, RPN_POSTFIX: postfix, RPN_METHOD: rung.method },
+      encoding: "utf8",
     }
+  );
 
-    const output: string[] = [];
-    const operators: string[] = [];
-
-    tokens.forEach((token) => {
-      if (!isNaN(Number(token))) {
-        output.push(token);
-      } else if (this.isOperator(token)) {
-        while (
-          operators.length &&
-          operators[operators.length - 1] !== "(" &&
-          this.hasHigherPrecedence(operators[operators.length - 1], token)
-        ) {
-          output.push(operators.pop()!);
-        }
-        operators.push(token);
-      } else if (token === "(") {
-        operators.push(token);
-      } else if (token === ")") {
-        while (operators.length && operators[operators.length - 1] !== "(") {
-          output.push(operators.pop()!);
-        }
-        if (operators[operators.length - 1] === "(") {
-          operators.pop();
-        } else {
-          throw new Error(useTranslation().errors.mismatchedParentheses);
-        }
-      }
-    });
-
-    while (operators.length) {
-      output.push(operators.pop()!);
+  if (res.status === EXIT_OK) {
+    const match: RegExpMatchArray | null = (res.stdout ?? "").match(
+      /RESULT:(-?\d+(?:\.\d+)?)/
+    );
+    if (match) {
+      const value: number = Number(match[1]);
+      return { kind: "ok", value };
     }
-
-    return output.join(" ");
   }
+
+  // Tué par un signal (SIGSEGV...) ou code 42 => la pile a explosé, on escalade.
+  if (res.signal !== null || res.status === EXIT_STACK_OVERFLOW) {
+    return { kind: "overflow" };
+  }
+
+  // Sinon c'est une vraie erreur de calcul (div par 0, token invalide...).
+  const message: string = (res.stderr ?? res.stdout ?? "").trim();
+  return { kind: "fatal", message };
 }
 
-const calculator = new RPNCalculator();
-const converter = new InfixToPostfixConverter();
+const converter: InfixToPostfixConverter = new InfixToPostfixConverter();
+const stackKB: number = Math.floor(osStackKB() * STACK_BUDGET_RATIO);
 
 try {
-  const rl = readline.createInterface({
+  const rl: readline.Interface = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
   });
 
-  rl.question(useTranslation().question.compute, (input) => {
+  rl.question(useTranslation().question.compute, (input: string): void => {
     try {
-      const postfixExpression = converter.convert(input);
-      const result = calculator.evaluate(postfixExpression);
+      const postfix: string = converter.convert(input);
 
-      console.log("result:", result);
-    } catch (error) {
+      let solved: boolean = false;
+      for (let i: number = 0; i < RUNGS.length; i++) {
+        const rung: Rung = RUNGS[i];
+        const stackInfo: string = rung.bigStack ? ` (${stackKB} KB)` : "";
+        console.log(
+          `-> tentative ${i + 1}/${RUNGS.length} : ${rung.label}${stackInfo}`
+        );
+
+        const attempt: Attempt = runRung(postfix, rung, stackKB);
+
+        if (attempt.kind === "ok") {
+          console.log("result:", attempt.value);
+          solved = true;
+          break;
+        }
+        if (attempt.kind === "fatal") {
+          console.error("Error:", attempt.message);
+          solved = true;
+          break;
+        }
+        // overflow : on souffle un coup et on monte d'un barreau
+        console.warn(useTranslation().info.fallback);
+      }
+
+      if (!solved) {
+        console.error(useTranslation().info.giveUp);
+      }
+    } catch (error: unknown) {
       if (error instanceof Error) {
         console.error("Error:", error.message);
       } else {
@@ -153,7 +166,7 @@ try {
     }
     rl.close();
   });
-} catch (error) {
+} catch (error: unknown) {
   if (error instanceof Error) {
     console.error(error.message);
   } else {
